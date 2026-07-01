@@ -2,13 +2,13 @@
 
 轻量级终端 AI Agent 工具，基于 DeepSeek 大模型。
 
-Miaowa Code 是一个运行在终端中的 AI 编程助手，灵感来源于 Claude Code。它能够理解你的代码库，执行文件操作，运行 shell 命令，并帮助你完成各种编程任务。
+Miaowa Code 是一个运行在终端中的 AI 编程助手，灵感来源于 Claude Code。它能够理解你的代码库，执行文件操作和代码搜索，帮助你完成各种编程任务。
 
 ## ✨ 特性
 
 - 🖥️ **终端原生** — 基于 `prompt-toolkit` 和 `rich` 构建的 TUI 体验
 - 🤖 **DeepSeek 驱动** — 使用 DeepSeek 大模型，高性价比
-- 🔧 **工具集成** — 内置文件读写、shell 执行、代码搜索等工具
+- 🔧 **工具集成** — 内置文件读写、目录浏览、代码搜索、项目分析等工具
 - 📁 **项目感知** — 自动理解项目结构和上下文
 - ⚡ **异步架构** — 基于 `httpx` 的全异步设计
 
@@ -48,9 +48,9 @@ miaowa
 
 进入 Miaowa 交互式终端后，你可以直接输入自然语言指令，例如：
 
-- "帮我写一个快速排序函数"
-- "解释这个项目的目录结构"
-- "修复 tests/test_main.py 中的测试错误"
+- "分析当前项目结构"
+- "解释 src/miaowa/main.py 的代码逻辑"
+- "搜索项目中所有使用 async 函数的地方"
 
 ## 🔧 配置
 
@@ -66,7 +66,7 @@ miaowa
 miaowa-code/
 ├── README.md                         # 项目说明
 ├── LICENSE                           # MIT 许可证
-├── pyproject.toml                    # Poetry 项目配置
+├── pyproject.toml                    # 项目配置
 ├── .gitignore                        # Git 忽略规则
 ├── .env.example                      # 环境变量模板
 ├── .editorconfig                     # 编辑器配置
@@ -77,10 +77,10 @@ miaowa-code/
 │   └── DEVELOPMENT.md                # 开发指南
 │
 ├── src/miaowa/                       # 主包
+│   ├── main.py                      # 入口点
 │   ├── cli/                          # CLI 层 — 命令行接口
-│   │   ├── main.py                   # CLI 入口 (REPL 启动)
 │   │   ├── repl.py                   # REPL 交互循环
-│   │   ├── renderer.py               # Rich Markdown 渲染器
+│   │   ├── renderer.py               # 终端渲染器
 │   │   ├── parser.py                 # 命令解析器
 │   │   └── history.py                # 命令历史管理
 │   ├── agent/                        # Agent 层 — 核心逻辑
@@ -121,8 +121,7 @@ miaowa-code/
 │
 └── scripts/                          # 辅助脚本
     ├── install.sh                    # 安装脚本 (Linux/macOS)
-    ├── install.ps1                   # 安装脚本 (Windows)
-    └── pre-commit.sh                 # Pre-commit hook
+    └── install.ps1                   # 安装脚本 (Windows)
 ```
 
 ## 🧪 开发
