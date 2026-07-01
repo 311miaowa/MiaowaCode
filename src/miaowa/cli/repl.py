@@ -174,13 +174,16 @@ class REPL:
                 # Ctrl+D → 需连续两次确认退出
                 if await self._handle_eof():
                     break
+                continue
             except KeyboardInterrupt:
                 # Ctrl+C → 中断当前操作（不退出）
                 self._handle_interrupt()
                 continue
 
             if user_input is None:
-                # prompt_toolkit 返回 None（异常情况）
+                # prompt_toolkit 返回 None — 视为 EOF
+                if await self._handle_eof():
+                    break
                 continue
 
             # 正常输入时重置 EOF 计数器
@@ -463,6 +466,16 @@ class REPL:
 
         # 键绑定
         kb = KeyBindings()
+
+        @kb.add("c-d", eager=True)
+        def _(event: Any) -> None:
+            """Ctrl+D: 无条件触发 EOF，优先级高于默认字符删除行为。"""
+            event.app.exit(exception=EOFError())
+
+        @kb.add("c-z", eager=True)
+        def _(event: Any) -> None:
+            """Ctrl+Z (Windows EOF): 无条件触发 EOF。"""
+            event.app.exit(exception=EOFError())
 
         @kb.add("escape", "enter")
         def _(event: Any) -> None:
