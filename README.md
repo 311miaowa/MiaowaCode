@@ -14,18 +14,18 @@ Miaowa Code 是一个运行在终端中的 AI 编程助手，灵感来源于 Cla
 
 ## 📦 安装
 
-### 通过 pip 安装
+### 前置要求
+
+- Python 3.10+
+
+### 本地安装
 
 ```bash
-pip install miaowa
-```
-
-### 通过 Poetry 安装（开发）
-
-```bash
-git clone https://github.com/miaowa/miaowa-code.git
+# 进入项目目录
 cd miaowa-code
-poetry install
+
+# 安装依赖并注册 miaowa 命令
+pip install -e .
 ```
 
 ## 🚀 使用
@@ -129,14 +129,14 @@ miaowa-code/
 
 ```bash
 # 安装开发依赖
-poetry install --with dev
+pip install pytest pytest-asyncio pytest-cov ruff mypy
 
 # 运行测试
-poetry run pytest
+pytest
 
 # 代码检查
-poetry run ruff check src/
-poetry run mypy src/
+ruff check src/
+mypy src/
 ```
 
 ## 📄 许可证
