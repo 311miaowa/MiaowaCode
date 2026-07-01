@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sample-app"
+version = "0.1.0"
+description = "A sample Python project for testing Miaowa Code"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "click>=8.1",
+]
+
+[project.scripts]
+sample-app = "sample_app.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
