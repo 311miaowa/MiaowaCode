@@ -3,28 +3,30 @@
 ## 环境准备
 
 ```bash
-# 克隆仓库
-git clone https://github.com/miaowa/miaowa-code.git
+# 进入项目目录
 cd miaowa-code
 
-# 安装依赖（推荐使用 Poetry）
-poetry install --with dev
+# 安装运行时依赖
+pip install -e .
+
+# 安装开发依赖
+pip install pytest pytest-asyncio pytest-cov ruff mypy
 ```
 
 ## 开发命令
 
 ```bash
 # 运行测试
-poetry run pytest
+pytest
 
 # 代码检查
-poetry run ruff check src/
+ruff check src/
 
 # 类型检查
-poetry run mypy src/
+mypy src/
 
 # 运行 Miaowa（开发模式）
-poetry run miaowa
+miaowa
 ```
 
 ## 项目结构
@@ -55,9 +57,9 @@ poetry run miaowa
 
 ## MVP 开发阶段
 
-| 阶段 | 内容 | 预估时间 |
-|------|------|---------|
-| Phase 1 | 核心 MVP（骨架 + 基础功能） | 3-4 周 |
-| Phase 2 | 打磨（测试 + 文档） | 2 周 |
-| Phase 3 | 扩展（高级功能） | 3-4 周 |
-| Phase 4 | 生态（插件 + 社区） | 2-3 周 |
+| 阶段 | 内容 | 状态 |
+|------|------|:--:|
+| Phase 1 | 核心 MVP（CLI 入口、多轮对话、文件读写、搜索、项目分析） | ✅ 完成 |
+| Phase 2 | 打磨（测试 + 文档 + 日志） | 🚧 进行中 |
+| Phase 3 | 扩展（Shell 执行、多模型切换等高级功能） | ⏳ 待开始 |
+| Phase 4 | 生态（插件 + 社区） | ⏳ 待开始 |
