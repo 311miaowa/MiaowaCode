@@ -261,9 +261,9 @@ class ToolNotFoundError(ToolError):
         - 工具名称拼写错误或对应工具未加载。
     """
 
-    def __init__(self, tool_name: str) -> None:
-        super().__init__(f"工具未注册: {tool_name!r}")
-        self.tool_name = tool_name
+    def __init__(self, message: str, *, tool_name: str | None = None) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name if tool_name is not None else message
 
 
 class ToolValidationError(ToolError):
