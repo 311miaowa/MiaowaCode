@@ -68,3 +68,6 @@ Thumbs.db
 .ai/
 .claude/
 *.log
+
+# Office temp files (Word ~$lock files)
+~$*
