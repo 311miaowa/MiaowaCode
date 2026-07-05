@@ -27,13 +27,16 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
 
 from miaowa.core.config import Config
 from miaowa.core.logger import get_logger
 from miaowa.core.types import ToolParameter, ToolResult
 from miaowa.tools.base import BaseTool
+
+if TYPE_CHECKING:
+    from miaowa.tools.gitignore_filter import GitignoreFilter
 
 logger = get_logger(__name__)
 
@@ -463,15 +466,23 @@ class ModuleAnalyzer:
         config: Miaowa 应用配置。
     """
 
-    def __init__(self, project_root: Path, config: Config) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: Config,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
+    ) -> None:
         """初始化模块分析器。
 
         Args:
             project_root: 项目根目录的绝对路径。
             config: Miaowa 应用配置对象。
+            gitignore_filter: 可选的 .gitignore 过滤器。
         """
         self._project_root = project_root
         self._config = config
+        self._gitignore_filter = gitignore_filter
         self._exclude_dirs: set[str] = set(config.project.exclude_dirs)
 
     # ------------------------------------------------------------------
@@ -596,6 +607,10 @@ class ModuleAnalyzer:
                 parts = set(entry.relative_to(self._project_root).parts)
                 if parts & self._exclude_dirs:
                     continue
+                # .gitignore 过滤
+                if self._gitignore_filter is not None:
+                    if self._gitignore_filter.is_ignored(entry):
+                        continue
                 all_dirs.add(entry.name)
 
         # 按优先级检测
@@ -672,6 +687,10 @@ class ModuleAnalyzer:
                 continue
             if entry.name.startswith("."):
                 continue
+            # .gitignore 过滤
+            if self._gitignore_filter is not None:
+                if self._gitignore_filter.is_ignored(entry):
+                    continue
 
             # 检查此目录是否有匹配扩展名的直接文件
             file_count = 0
@@ -841,17 +860,27 @@ class ProjectAnalyzer:
         modules: ModuleAnalyzer 实例。
     """
 
-    def __init__(self, project_root: Path, config: Config) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: Config,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
+    ) -> None:
         """初始化项目分析器。
 
         Args:
             project_root: 项目根目录的绝对路径。
             config: Miaowa 应用配置对象。
+            gitignore_filter: 可选的 .gitignore 过滤器。
         """
         self._project_root = project_root
         self._config = config
+        self._gitignore_filter = gitignore_filter
         self.tech_stack = TechStackDetector(project_root)
-        self.modules = ModuleAnalyzer(project_root, config)
+        self.modules = ModuleAnalyzer(
+            project_root, config, gitignore_filter=gitignore_filter,
+        )
 
     # ------------------------------------------------------------------
     # full_analysis
@@ -980,6 +1009,10 @@ class ProjectAnalyzer:
                     continue
                 if e.is_dir() and e.name in exclude_dirs:
                     continue
+                # .gitignore 过滤
+                if self._gitignore_filter is not None:
+                    if self._gitignore_filter.is_ignored(Path(e.path)):
+                        continue
                 visible.append(e)
 
             for i, entry in enumerate(visible):
@@ -1150,6 +1183,10 @@ class ProjectAnalyzer:
             parts = set(entry.relative_to(self._project_root).parts)
             if parts & exclude_dirs:
                 continue
+            # .gitignore 过滤
+            if self._gitignore_filter is not None:
+                if self._gitignore_filter.is_ignored(entry):
+                    continue
 
             if entry.is_dir():
                 if not entry.name.startswith("."):
@@ -1276,7 +1313,13 @@ class AnalyzeProjectTool(BaseTool):
         ),
     ]
 
-    def __init__(self, project_root: Path, config: Config) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: Config,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
+    ) -> None:
         """初始化 AnalyzeProjectTool。
 
         ProjectAnalyzer 在初始化时创建一次，后续 execute() 调用复用。
@@ -1286,10 +1329,14 @@ class AnalyzeProjectTool(BaseTool):
         Args:
             project_root: 项目根目录的绝对路径。
             config: Miaowa 应用配置对象。
+            gitignore_filter: 可选的 .gitignore 过滤器。
         """
         self._project_root = project_root
         self._config = config
-        self._analyzer = ProjectAnalyzer(project_root, config)
+        self._gitignore_filter = gitignore_filter
+        self._analyzer = ProjectAnalyzer(
+            project_root, config, gitignore_filter=gitignore_filter,
+        )
         self._cache: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------

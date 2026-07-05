@@ -10,13 +10,16 @@ import asyncio
 import fnmatch
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 
 from miaowa.core.config import Config
 from miaowa.core.types import ToolParameter, ToolResult
 from miaowa.tools.base import BaseTool
+
+if TYPE_CHECKING:
+    from miaowa.tools.gitignore_filter import GitignoreFilter
 
 # ============================================================================
 # 常量
@@ -150,12 +153,20 @@ class ReadFileTool(BaseTool):
         ),
     ]
 
-    def __init__(self, project_root: Path, config: Config) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: Config,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
+    ) -> None:
         """初始化 ReadFileTool。
 
         Args:
             project_root: 项目根目录的绝对路径。所有文件路径均以此为基准解析。
             config: Miaowa 应用配置对象，用于读取文件大小上限等设置。
+            gitignore_filter: 可选的 .gitignore 过滤器。传入后 ReadFileTool
+                在校验文件路径时会检查目标文件是否被忽略。
 
         Raises:
             ValueError: project_root 不是目录时抛出。
@@ -167,6 +178,7 @@ class ReadFileTool(BaseTool):
             )
         self._project_root = resolved
         self._config = config
+        self._gitignore_filter = gitignore_filter
 
     # ------------------------------------------------------------------
     # 属性
@@ -191,13 +203,14 @@ class ReadFileTool(BaseTool):
         执行流程（PRD §6.2.1，含安全加固）:
             1. 解析路径：拒绝绝对路径，基于 project_root 解析。
             2. 安全检查：resolve() + relative_to() 防止目录穿越。
-            3. 存在检查：文件不存在或不是普通文件时返回错误。
-            4. 大小检查：文件超过 config.project.max_file_size 时返回错误。
-            5. 异步读取：使用 aiofiles 一次性读取 raw bytes。
-            6. 二进制检测：BOM 检测 → null 字节占比检测。
-            7. 编码解码：按 fallback 链依次尝试解码。
-            8. 行号处理：slice、范围校验、read_file_max_lines 上限。
-            9. 返回 ToolResult。
+            3. .gitignore 过滤：检查文件是否被 .gitignore 规则排除。
+            4. 存在检查：文件不存在或不是普通文件时返回错误。
+            5. 大小检查：文件超过 config.project.max_file_size 时返回错误。
+            6. 异步读取：使用 aiofiles 一次性读取 raw bytes。
+            7. 二进制检测：BOM 检测 → null 字节占比检测。
+            8. 编码解码：按 fallback 链依次尝试解码。
+            9. 行号处理：slice、范围校验、read_file_max_lines 上限。
+            10. 返回 ToolResult。
 
         Args:
             **kwargs: 经过 ToolValidator 校验后的参数字典。
@@ -230,7 +243,17 @@ class ReadFileTool(BaseTool):
             return ToolResult.fail(str(exc))
 
         # ------------------------------------------------------------------
-        # 3. 存在检查
+        # 3. .gitignore 过滤
+        # ------------------------------------------------------------------
+        if self._gitignore_filter is not None:
+            if self._gitignore_filter.is_ignored(full_path):
+                return ToolResult.fail(
+                    f"文件被 .gitignore 规则排除: {path_str} "
+                    f"(解析路径: {full_path})"
+                )
+
+        # ------------------------------------------------------------------
+        # 4. 存在检查
         # ------------------------------------------------------------------
         if not full_path.exists():
             return ToolResult.fail(
@@ -468,12 +491,20 @@ class ListDirectoryTool(BaseTool):
         ),
     ]
 
-    def __init__(self, project_root: Path, config: Config) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: Config,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
+    ) -> None:
         """初始化 ListDirectoryTool。
 
         Args:
             project_root: 项目根目录的绝对路径。所有路径均以此为基准解析。
             config: Miaowa 应用配置对象，用于获取排除目录列表。
+            gitignore_filter: 可选的 .gitignore 过滤器。传入后在遍历目录时
+                自动跳过被 .gitignore 规则忽略的文件和目录。
 
         Raises:
             ValueError: project_root 不是目录时抛出。
@@ -485,6 +516,7 @@ class ListDirectoryTool(BaseTool):
             )
         self._project_root = resolved
         self._config = config
+        self._gitignore_filter = gitignore_filter
         # 一次性转换为 set，避免每次 execute() 重复转换
         self._exclude_dirs: set[str] = set(config.project.exclude_dirs)
 
@@ -636,8 +668,8 @@ class ListDirectoryTool(BaseTool):
     # 内部遍历方法
     # ------------------------------------------------------------------
 
-    @staticmethod
     def _list_flat(
+        self,
         dir_path: Path,
         base_path: Path,
         exclude_dirs: set[str],
@@ -665,6 +697,10 @@ class ListDirectoryTool(BaseTool):
                 if entry.is_dir():
                     if entry.name in exclude_dirs:
                         continue
+                    # .gitignore 过滤
+                    if self._gitignore_filter is not None:
+                        if self._gitignore_filter.is_ignored(Path(entry.path)):
+                            continue
                     rel_path = Path(entry.path).relative_to(base_path).as_posix()
                     items.append({
                         "name": entry.name,
@@ -673,6 +709,10 @@ class ListDirectoryTool(BaseTool):
                         "size": 0,
                     })
                 else:
+                    # .gitignore 过滤
+                    if self._gitignore_filter is not None:
+                        if self._gitignore_filter.is_ignored(Path(entry.path)):
+                            continue
                     try:
                         size = entry.stat().st_size
                     except OSError:
@@ -686,9 +726,8 @@ class ListDirectoryTool(BaseTool):
                     })
         return items
 
-    @classmethod
     def _walk_recursive(
-        cls,
+        self,
         dir_path: Path,
         base_path: Path,
         max_depth: int,
@@ -712,16 +751,17 @@ class ListDirectoryTool(BaseTool):
         """
         items: list[dict[str, Any]] = []
         # max_items+1：多收一条用于检测是否触发截断
-        cls._walk_dir(
+        self._walk_dir(
             dir_path, base_path, depth=1, max_depth=max_depth,
-            exclude_dirs=exclude_dirs, results=items,
+            exclude_dirs=exclude_dirs,
+            gitignore_filter=self._gitignore_filter,
+            results=items,
             max_items=_MAX_DIR_ITEMS + 1,
         )
         return items
 
-    @classmethod
+    @staticmethod
     def _walk_dir(
-        cls,
         dir_path: Path,
         base_path: Path,
         depth: int,
@@ -729,6 +769,8 @@ class ListDirectoryTool(BaseTool):
         exclude_dirs: set[str],
         results: list[dict[str, Any]],
         max_items: int,
+        *,
+        gitignore_filter: GitignoreFilter | None = None,
     ) -> None:
         """递归遍历的递归辅助方法。
 
@@ -744,6 +786,7 @@ class ListDirectoryTool(BaseTool):
             results: 结果列表（原地追加）。
             max_items: 最大收集条目数（含余量），达到后停止收集但继续
                 （仅统计，不存储）以确保截断标记准确。
+            gitignore_filter: 可选的 .gitignore 过滤器。
         """
         if depth > max_depth:
             return
@@ -759,6 +802,10 @@ class ListDirectoryTool(BaseTool):
                     if entry.is_dir():
                         if entry.name in exclude_dirs:
                             continue
+                        # .gitignore 过滤
+                        if gitignore_filter is not None:
+                            if gitignore_filter.is_ignored(Path(entry.path)):
+                                continue
                         rel_path = Path(entry.path).relative_to(base_path).as_posix()
                         results.append({
                             "name": entry.name,
@@ -767,15 +814,20 @@ class ListDirectoryTool(BaseTool):
                             "size": 0,
                         })
                         # 递归进入子目录
-                        cls._walk_dir(
+                        ListDirectoryTool._walk_dir(
                             Path(entry.path), base_path,
                             depth=depth + 1,
                             max_depth=max_depth,
                             exclude_dirs=exclude_dirs,
                             results=results,
                             max_items=max_items,
+                            gitignore_filter=gitignore_filter,
                         )
                     else:
+                        # .gitignore 过滤
+                        if gitignore_filter is not None:
+                            if gitignore_filter.is_ignored(Path(entry.path)):
+                                continue
                         try:
                             size = entry.stat().st_size
                         except OSError:

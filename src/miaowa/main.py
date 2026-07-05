@@ -58,6 +58,7 @@ from miaowa.llm.tokenizer import TokenCounter
 from miaowa.prompts.manager import PromptManager
 from miaowa.tools.analyzer import AnalyzeProjectTool
 from miaowa.tools.filesystem import ListDirectoryTool, ReadFileTool
+from miaowa.tools.gitignore_filter import GitignoreFilter
 from miaowa.tools.registry import ToolRegistry
 from miaowa.tools.search import SearchFilesTool
 
@@ -259,15 +260,35 @@ def _wire_components(config, project_root: Path, *, no_color: bool = False) -> R
     # 5. 工具注册中心（注册 4 个内置工具）
     # ------------------------------------------------------------------
     try:
+        # 创建 .gitignore 过滤器（如果可用）
+        gitignore_filter = GitignoreFilter.from_config(config, project_root)
+        if gitignore_filter is not None:
+            logger.info(
+                f"GitignoreFilter initialized with {gitignore_filter.spec_count} "
+                f".gitignore file(s)"
+            )
+
         tool_registry = ToolRegistry()
 
         # 文件系统工具
-        tool_registry.register(ReadFileTool(project_root=project_root, config=config))
-        tool_registry.register(ListDirectoryTool(project_root=project_root, config=config))
+        tool_registry.register(ReadFileTool(
+            project_root=project_root, config=config,
+            gitignore_filter=gitignore_filter,
+        ))
+        tool_registry.register(ListDirectoryTool(
+            project_root=project_root, config=config,
+            gitignore_filter=gitignore_filter,
+        ))
         # 搜索工具
-        tool_registry.register(SearchFilesTool(project_root=project_root, config=config))
+        tool_registry.register(SearchFilesTool(
+            project_root=project_root, config=config,
+            gitignore_filter=gitignore_filter,
+        ))
         # 项目分析工具
-        tool_registry.register(AnalyzeProjectTool(project_root=project_root, config=config))
+        tool_registry.register(AnalyzeProjectTool(
+            project_root=project_root, config=config,
+            gitignore_filter=gitignore_filter,
+        ))
 
         logger.info(f"Registered {len(tool_registry)} tools")
     except Exception as exc:
@@ -410,6 +431,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="禁用终端彩色输出（Rich 无条件回退为纯文本）",
     )
     parser.add_argument(
+        "--no-gitignore",
+        action="store_true",
+        default=False,
+        help="禁用 .gitignore 文件过滤（所有文件均可见）",
+    )
+    parser.add_argument(
         "--project", "-p",
         type=str,
         default=None,
@@ -449,6 +476,8 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, str]:
         overrides["log_level"] = "DEBUG"
     if getattr(args, "no_color", False):
         overrides["no_color"] = "true"
+    if getattr(args, "no_gitignore", False):
+        overrides["use_gitignore"] = False
 
     return overrides
 

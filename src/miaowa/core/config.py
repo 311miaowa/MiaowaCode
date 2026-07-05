@@ -146,6 +146,8 @@ class ProjectConfig:
         exclude_dirs: 扫描与搜索时排除的目录列表。
         max_file_size: 允许读取的文件最大字节数（默认 1 MB）。
         binary_extensions: 视为二进制文件的扩展名列表。
+        use_gitignore: 是否使用 .gitignore 规则过滤文件。
+            默认 True。当项目根目录无 .gitignore 文件时自动退化为无过滤。
     """
 
     exclude_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_DIRS))
@@ -153,6 +155,7 @@ class ProjectConfig:
     binary_extensions: list[str] = field(
         default_factory=lambda: list(DEFAULT_BINARY_EXTENSIONS)
     )
+    use_gitignore: bool = True
 
 
 @dataclass
@@ -278,6 +281,7 @@ class ConfigManager:
         "MIAOWA_MAX_HISTORY": ("ui", "max_history"),
         # Project
         "MIAOWA_MAX_FILE_SIZE": ("project", "max_file_size"),
+        "MIAOWA_USE_GITIGNORE": ("project", "use_gitignore"),
         # Tools
         "MIAOWA_READ_MAX_LINES": ("tools", "read_file_max_lines"),
         "MIAOWA_SEARCH_MAX_RESULTS": ("tools", "search_max_results"),
@@ -667,6 +671,7 @@ class ConfigManager:
             "syntax_theme": ("ui", "syntax_theme"),
             "max_history": ("ui", "max_history"),
             "max_file_size": ("project", "max_file_size"),
+            "use_gitignore": ("project", "use_gitignore"),
             "read_max_lines": ("tools", "read_file_max_lines"),
             "search_max_results": ("tools", "search_max_results"),
             "shell_timeout": ("tools", "shell_timeout"),
