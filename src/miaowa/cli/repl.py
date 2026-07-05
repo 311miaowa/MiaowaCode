@@ -259,12 +259,20 @@ class REPL:
             )
 
         try:
+            # Phase 2 §3.2: 状态行 — 处理中
+            self.renderer.render_status_line(
+                f"处理中 (turn #{self._turn_count})..."
+            )
+
             # 流式执行 + 实时渲染
             async for chunk in self.executor.run(user_input, project_root):
                 self.renderer.render_stream_chunk(chunk)
 
             self.renderer.flush_stream()
             self.renderer.console.print()  # 换行
+
+            # Phase 2 §3.2: 清除状态行
+            self.renderer.render_status_line("")
 
             # 统计信息
             response = self.executor.last_response
@@ -284,6 +292,7 @@ class REPL:
             # Ctrl+C 中断时，asyncio 会取消当前任务
             self.renderer.render_warning("Task interrupted")
             self.renderer.flush_stream()
+            self.renderer.render_status_line("")
             # 仍尝试显示已有的统计信息
             response = self.executor.last_response
             if response is not None:
@@ -293,6 +302,7 @@ class REPL:
             self.renderer.render_error(
                 "Internal error processing request. Check logs for details."
             )
+            self.renderer.render_status_line("")
 
     # ------------------------------------------------------------------
     # 元命令处理

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 import unicodedata
 from enum import Enum, auto
@@ -232,6 +233,207 @@ class CodeBlockState:
         if not all(c == self._fence_char for c in stripped):
             return False
         return len(stripped) >= self._fence_length
+
+
+# ---------------------------------------------------------------------------
+# 加载动画上下文管理器（Phase 2 §3.2）
+# ---------------------------------------------------------------------------
+
+
+class ThinkingContext:
+    """延迟显示"思考中..."Spinner 的上下文管理器。
+
+    使用 ``threading.Timer`` 在进入上下文 200ms 后才显示 Rich Status spinner，
+    避免 LLM 快速响应（< 200ms）时出现闪烁。
+
+    调用方在接收到 LLM 首个 token 时需调用 ``first_token_received()``，
+    以取消延迟定时器或停止已显示的 spinner。
+
+    在非交互模式下（管道/重定向），Renderer 返回 ``_NoOpThinkingContext``。
+
+    Attributes:
+        _console: Rich Console 实例。
+        _text: Spinner 文本。
+        _delay: 延迟显示秒数。
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        text: str = "思考中...",
+        delay: float = 0.2,
+    ) -> None:
+        self._console = console
+        self._text = text
+        self._delay = delay
+        self._timer: threading.Timer | None = None
+        self._status: Any = None  # Rich Status 上下文管理器
+        self._active: bool = False
+        self._lock: threading.Lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # 公共方法
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "ThinkingContext":
+        """进入上下文：启动 200ms 延迟定时器。"""
+        self._timer = threading.Timer(self._delay, self._show_spinner)
+        self._timer.daemon = True
+        self._timer.start()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """退出上下文：清理定时器和 spinner。"""
+        self._cleanup()
+        return False  # 不抑制异常
+
+    def first_token_received(self) -> None:
+        """通知首个 token 已到达 — 取消延迟定时器或停止 spinner。
+
+        安全多次调用：后续调用为无操作。
+        """
+        self._cleanup()
+
+    # ------------------------------------------------------------------
+    # 内部方法
+    # ------------------------------------------------------------------
+
+    def _show_spinner(self) -> None:
+        """定时器回调（在后台线程中运行）。
+
+        启动 Rich status spinner。使用 ``self._lock`` 保护
+        ``_status`` / ``_active`` 的并发访问。
+        所有异常静默捕获，后台线程绝不向主线程传播异常。
+        """
+        try:
+            with self._lock:
+                # 二次确认：定时器触发时可能 first_token_received 已清理
+                if self._timer is None:
+                    return
+                self._status = self._console.status(self._text, spinner="dots")
+                self._status.__enter__()  # 启动内部 Live(transient=True)
+                self._active = True
+        except Exception:
+            pass
+
+    def _cleanup(self) -> None:
+        """停止并清理定时器和 spinner。幂等安全。
+
+        使用 ``self._lock`` 确保与定时器线程的 ``_show_spinner``
+        不会产生竞态条件（Spinner 泄漏）。
+        """
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if self._status is not None and self._active:
+                try:
+                    self._status.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self._active = False
+                self._status = None
+
+
+class _NoOpThinkingContext:
+    """非交互模式的 ThinkingContext 空实现。"""
+
+    def __enter__(self) -> "_NoOpThinkingContext":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    def first_token_received(self) -> None:
+        pass
+
+
+class ToolProgressContext:
+    """工具执行进度指示器的上下文管理器。
+
+    进入上下文时打印工具名称和参数摘要，
+    退出时打印完成行（含耗时）。
+
+    使用 ``console.print()`` 而非 ``console.status()``，
+    避免并行工具调用时的 Rich Live 冲突。
+
+    在非交互模式下，Renderer 返回 ``_NoOpToolProgressContext``。
+
+    Attributes:
+        _console: Rich Console 实例。
+        _tool_name: 工具名称。
+        _args_summary: 参数摘要（已截断至 80 字符）。
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        tool_name: str,
+        args_summary: str,
+    ) -> None:
+        self._console = console
+        self._tool_name = tool_name
+        self._args_summary = args_summary[:80]
+        self._start_time: float = 0.0
+
+    # ------------------------------------------------------------------
+    # 公共方法
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "ToolProgressContext":
+        """进入上下文：打印工具执行指示行。"""
+        self._start_time = time.monotonic()
+        try:
+            text = Text()
+            text.append("  🔧 ", style="yellow")
+            text.append(f"{self._tool_name}", style="bold")
+            text.append("  ", style="dim")
+            text.append(self._args_summary, style="dim")
+            self._console.print(text)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """退出上下文：打印完成/失败行（含耗时）。"""
+        elapsed_ms = int((time.monotonic() - self._start_time) * 1000)
+        exc_type = args[0]  # None = 正常退出, 非 None = 异常退出
+
+        try:
+            text = Text()
+            text.append("  ", style="dim")
+
+            if exc_type is not None:
+                # 工具执行异常
+                text.append("✗ ", style="red")
+                text.append(f"{self._tool_name}", style="bold red")
+                text.append(" — ", style="dim")
+                text.append(f"失败 ({elapsed_ms}ms)", style="red")
+            else:
+                # 工具执行成功
+                text.append("✓ ", style="dim")
+                text.append(f"{self._tool_name}", style="bold")
+                text.append(" — ", style="dim")
+                text.append(f"完成 ({elapsed_ms}ms)", style="dim")
+
+            self._console.print(text)
+        except Exception:
+            status = "FAIL" if exc_type is not None else "OK"
+            _fallback_print(
+                f"  [{status}] {self._tool_name} — {elapsed_ms}ms"
+            )
+
+        return False  # 不抑制异常
+
+
+class _NoOpToolProgressContext:
+    """非交互模式的 ToolProgressContext 空实现。"""
+
+    def __enter__(self) -> "_NoOpToolProgressContext":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +1034,109 @@ class Renderer:
             self.console.print(syntax)
         except Exception:
             _fallback_print(code)
+
+    # ------------------------------------------------------------------
+    # 加载动画：思考中 Spinner（Phase 2 §3.2）
+    # ------------------------------------------------------------------
+
+    def render_thinking(self) -> ThinkingContext | _NoOpThinkingContext:
+        """返回"思考中"延迟 Spinner 的上下文管理器。
+
+        在交互模式下：若首个 LLM token 未在 200ms 内返回，显示
+        "思考中..." spinner。调用方需在内容开始流式传输时调用
+        ``first_token_received()``。
+
+        在非交互模式下：返回无操作的空上下文。
+
+        Returns:
+            ``ThinkingContext`` 或 ``_NoOpThinkingContext``。
+        """
+        try:
+            if self._is_interactive():
+                return ThinkingContext(self.console, "思考中...", 0.2)
+        except Exception:
+            pass
+        return _NoOpThinkingContext()
+
+    # ------------------------------------------------------------------
+    # 加载动画：工具执行进度指示器（Phase 2 §3.2）
+    # ------------------------------------------------------------------
+
+    def render_tool_progress(
+        self, tool_name: str, args_summary: str
+    ) -> ToolProgressContext | _NoOpToolProgressContext:
+        """返回工具执行进度指示器的上下文管理器。
+
+        打印 "🔧 tool_name — args_summary"，完成后打印耗时。
+        使用 ``console.print()`` 而非 ``console.status()``，
+        避免并行工具调用时的 Live 冲突。
+
+        Args:
+            tool_name: 正在执行的工具名称。
+            args_summary: 紧凑参数摘要（最多显示 80 字符）。
+
+        Returns:
+            ``ToolProgressContext`` 或 ``_NoOpToolProgressContext``。
+        """
+        try:
+            if self._is_interactive():
+                return ToolProgressContext(
+                    self.console, tool_name, args_summary
+                )
+        except Exception:
+            pass
+        return _NoOpToolProgressContext()
+
+    # ------------------------------------------------------------------
+    # 加载动画：状态行（Phase 2 §3.2）
+    # ------------------------------------------------------------------
+
+    def render_status_line(self, text: str) -> None:
+        """渲染一行状态指示器。
+
+        使用 ``console.print()`` 直接输出 dim 样式状态行，
+        避免与流式输出的 ``Live`` 显示冲突。
+
+        Args:
+            text: 状态文本。空字符串时无输出。
+        """
+        if not text:
+            return
+        try:
+            if self._is_interactive():
+                status = Text(text, style="dim")
+                self.console.print(status)
+        except Exception:
+            _fallback_print(f"[STATUS] {text}")
+
+    # ------------------------------------------------------------------
+    # 内部：交互模式检测
+    # ------------------------------------------------------------------
+
+    def _is_interactive(self) -> bool:
+        """检测终端是否支持交互式动画。
+
+        双重检查：
+            1. ``self.console.is_interactive`` — Rich 内部检测
+            2. 当输出到真实 stdout/stderr 时，额外检查 ``isatty()``
+               （防止 ``force_terminal=True`` 在管道/重定向时误判）。
+               当 console.file 被显式覆盖（如测试的 StringIO）时，
+               信任调用方意图，跳过 isatty 检查。
+
+        Returns:
+            True 当终端连接到交互式 TTY 时。
+        """
+        try:
+            if not self.console.is_interactive:
+                return False
+            import sys
+            # 仅当输出目标是真实 stdout/stderr 时才做额外验证；
+            # 显式覆盖（如测试 StringIO）时信任调用方。
+            if self.console.file is sys.stdout or self.console.file is sys.stderr:
+                return sys.stdout.isatty()
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # 内部方法

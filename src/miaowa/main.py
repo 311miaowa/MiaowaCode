@@ -304,6 +304,9 @@ def _wire_components(config, project_root: Path, *, no_color: bool = False) -> R
         print(f"Error: Renderer init failed: {exc}", file=sys.stderr)
         raise
 
+    # Phase 2 §3.2: 将 renderer 注入 executor 以支持加载动画
+    executor._renderer = renderer
+
     # ------------------------------------------------------------------
     # 8. 命令解析器
     # ------------------------------------------------------------------

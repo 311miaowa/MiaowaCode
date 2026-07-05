@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -163,6 +164,7 @@ class AgentExecutor:
         token_counter: TokenCounter | None = None,
         memory_manager: Any = None,
         config: Config | None = None,
+        renderer: Any = None,
     ) -> None:
         """初始化 Agent 执行器。
 
@@ -174,6 +176,8 @@ class AgentExecutor:
                 若为 None，用量统计和费用将被设为 0。
             memory_manager: 对话记忆管理器（可选，None 时跳过记忆操作）。
             config: Miaowa 应用配置对象（可选）。
+            renderer: 终端渲染器（可选，用于加载动画反馈）。
+                若为 None，跳过动画渲染。
         """
         self._llm = llm_adapter
         self._tools = tool_manager
@@ -181,6 +185,7 @@ class AgentExecutor:
         self._token_counter = token_counter
         self._memory = memory_manager
         self._config = config
+        self._renderer = renderer
         self._validator = ToolValidator()
         self.last_response: AgentResponse | None = None
 
@@ -466,13 +471,34 @@ class AgentExecutor:
         """
         last_error: Exception | None = None
 
+        # -- 思考中动画（Phase 2 §3.2）: 跨重试复用同一实例 ---------
+        _thinking = (
+            self._renderer.render_thinking()
+            if self._renderer is not None
+            else None
+        )
+
         for attempt in range(_MAX_RETRIES + 1):
             try:
+                if _thinking is not None:
+                    _thinking.__enter__()
+
                 # -- 流式迭代（逐块产出，同时累积 tool call 片段）-----
                 tool_call_acc: dict[int, dict[str, Any]] = {}
                 finish_reason: str | None = None
+                _first_content: bool = True
 
                 async for chunk in self._llm.stream(messages, tools):
+                    # 首个实质 token — 通知思考中动画（Phase 2 §3.2）
+                    # 需要同时检查 delta_content 和 tool_call_delta，
+                    # 因为 LLM 首个 chunk 可能是 tool_call 而非文本内容。
+                    if _first_content and (
+                        chunk.delta_content or chunk.tool_call_delta
+                    ):
+                        _first_content = False
+                        if _thinking is not None:
+                            _thinking.first_token_received()
+
                     # 累积 tool call 增量
                     if chunk.tool_call_delta:
                         delta = chunk.tool_call_delta
@@ -544,6 +570,13 @@ class AgentExecutor:
                         f"{type(exc).__name__}: {exc}"
                     )
                     break
+
+            finally:
+                if _thinking is not None:
+                    try:
+                        _thinking.__exit__(None, None, None)
+                    except Exception:
+                        pass
 
         # 所有重试均失败 → yield 错误 chunk
         error_chunk = StreamChunk(
@@ -664,8 +697,29 @@ class AgentExecutor:
                     tool_call_id=tool_call.id,
                 )
 
-            # 3. 执行工具
-            result = await tool.execute(**args)
+            # 3. 执行工具（Phase 2 §3.2: 加载动画）
+            _progress = (
+                self._renderer.render_tool_progress(
+                    name, self._build_args_summary(args)
+                )
+                if self._renderer is not None
+                else None
+            )
+
+            if _progress is not None:
+                _progress.__enter__()
+
+            try:
+                result = await tool.execute(**args)
+            finally:
+                if _progress is not None:
+                    try:
+                        # 使用 sys.exc_info() 传递真实异常信息，
+                        # 使 ToolProgressContext 在失败时显示"失败"而非"完成"
+                        _progress.__exit__(*sys.exc_info())
+                    except Exception:
+                        pass
+
             elapsed = time.time() - t_start
             logger.info(
                 f"  [{index}] 工具执行成功: {name} ({elapsed:.2f}s)"
@@ -751,6 +805,28 @@ class AgentExecutor:
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_args_summary(args: dict[str, Any], max_length: int = 60) -> str:
+        """构建紧凑的参数摘要字符串（用于工具进度显示）。
+
+        Args:
+            args: 工具参数字典。
+            max_length: 最大字符长度。
+
+        Returns:
+            紧凑字符串，如 ``{"path":"/tmp/test.py","query":"hello"}``，
+            超长时截断并附加 "…"。
+        """
+        try:
+            summary = json.dumps(
+                args, ensure_ascii=False, separators=(",", ":")
+            )
+        except (TypeError, ValueError):
+            summary = str(args)
+        if len(summary) > max_length:
+            summary = summary[:max_length] + "…"
+        return summary
 
     def invalidate_project_cache(self) -> None:
         """使项目分析缓存失效（委托给 ContextBuilder）。"""
