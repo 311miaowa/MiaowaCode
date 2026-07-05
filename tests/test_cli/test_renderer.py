@@ -16,6 +16,10 @@ from rich.console import Console
 from miaowa.cli.renderer import (
     CodeBlockState,
     Renderer,
+    ThinkingContext,
+    _NoOpThinkingContext,
+    ToolProgressContext,
+    _NoOpToolProgressContext,
     _display_width,
     _format_json_compact,
     _safe_format_cost,
@@ -1241,3 +1245,279 @@ class TestProcessStreamBuffer:
         # 再次调用应重置状态
         renderer._process_stream_buffer("normal text")
         assert not renderer._code_block_state.is_in_code_block()
+
+
+# ============================================================================
+# Phase 2 §3.2: 加载动画 — ThinkingContext 测试
+# ============================================================================
+
+
+class TestThinkingContext:
+    """ThinkingContext 延迟 Spinner 测试。"""
+
+    @pytest.fixture
+    def interactive_console(self) -> Console:
+        """提供交互式 Console（force_terminal=True）。"""
+        output = io.StringIO()
+        return Console(force_terminal=True, file=output, highlight=False, width=120)
+
+    @pytest.fixture
+    def non_interactive_console(self) -> Console:
+        """提供非交互式 Console。"""
+        output = io.StringIO()
+        return Console(force_terminal=False, file=output, highlight=False, width=120)
+
+    # ------------------------------------------------------------------
+    # render_thinking 工厂方法
+    # ------------------------------------------------------------------
+
+    def test_render_thinking_returns_thinking_context(
+        self, renderer: Renderer
+    ) -> None:
+        """交互模式下 render_thinking() 返回 ThinkingContext。"""
+        renderer.console = Console(
+            force_terminal=True, file=io.StringIO(), highlight=False
+        )
+        ctx = renderer.render_thinking()
+        assert isinstance(ctx, ThinkingContext)
+
+    def test_render_thinking_returns_noop_for_non_interactive(
+        self, renderer: Renderer
+    ) -> None:
+        """非交互模式下 render_thinking() 返回 _NoOpThinkingContext。"""
+        renderer.console = Console(
+            force_terminal=False, file=io.StringIO(), highlight=False
+        )
+        ctx = renderer.render_thinking()
+        assert isinstance(ctx, _NoOpThinkingContext)
+
+    # ------------------------------------------------------------------
+    # 首次 token 在延迟前到达 — 取消定时器
+    # ------------------------------------------------------------------
+
+    def test_first_token_before_delay_cancels_timer(
+        self, interactive_console: Console
+    ) -> None:
+        """200ms 内调用 first_token_received() 应取消 spinner。"""
+        ctx = ThinkingContext(interactive_console, "思考中...", 0.5)  # 长延迟便于测试
+        ctx.__enter__()
+        # 立即通知 first token
+        ctx.first_token_received()
+        # 定时器应被取消
+        assert ctx._timer is None
+        assert ctx._active is False
+        ctx.__exit__(None, None, None)
+
+    def test_context_cleanup_on_exit(
+        self, interactive_console: Console
+    ) -> None:
+        """__exit__ 应清理定时器和状态（即使 spinner 未显示）。"""
+        ctx = ThinkingContext(interactive_console, "思考中...", 5.0)
+        ctx.__enter__()
+        assert ctx._timer is not None
+        ctx.__exit__(None, None, None)
+        assert ctx._timer is None
+        assert ctx._active is False
+
+    def test_context_does_not_suppress_exceptions(
+        self, interactive_console: Console
+    ) -> None:
+        """__exit__ 应返回 False（不抑制异常传播）。"""
+        ctx = ThinkingContext(interactive_console)
+        ctx.__enter__()
+        result = ctx.__exit__(None, None, None)
+        assert result is False  # False = 不抑制异常
+
+    def test_first_token_received_idempotent(
+        self, interactive_console: Console
+    ) -> None:
+        """first_token_received() 多次调用应安全（幂等）。"""
+        ctx = ThinkingContext(interactive_console, "思考中...", 5.0)
+        ctx.__enter__()
+        ctx.first_token_received()
+        ctx.first_token_received()  # 第二次调用应无异常
+        assert ctx._timer is None
+        ctx.__exit__(None, None, None)
+
+    def test_noop_context_has_same_interface(self) -> None:
+        """_NoOpThinkingContext 应具有相同接口且不抛异常。"""
+        ctx = _NoOpThinkingContext()
+        result = ctx.__enter__()
+        assert result is ctx
+        ctx.first_token_received()  # 不抛异常
+        ctx.__exit__(None, None, None)  # 不抛异常
+
+    def test_enter_returns_self(self, interactive_console: Console) -> None:
+        """__enter__ 应返回上下文自身。"""
+        ctx = ThinkingContext(interactive_console, delay=5.0)
+        result = ctx.__enter__()
+        assert result is ctx
+        ctx.__exit__(None, None, None)
+
+
+# ============================================================================
+# Phase 2 §3.2: 加载动画 — ToolProgressContext 测试
+# ============================================================================
+
+
+class TestToolProgressContext:
+    """ToolProgressContext 工具执行进度测试。"""
+
+    @pytest.fixture
+    def progress_console(self) -> Console:
+        """提供带 StringIO 的 Console。"""
+        output = io.StringIO()
+        return Console(force_terminal=True, file=output, highlight=False, width=120)
+
+    # ------------------------------------------------------------------
+    # render_tool_progress 工厂方法
+    # ------------------------------------------------------------------
+
+    def test_render_tool_progress_returns_tool_context(
+        self, renderer: Renderer
+    ) -> None:
+        """交互模式下返回 ToolProgressContext。"""
+        renderer.console = Console(
+            force_terminal=True, file=io.StringIO(), highlight=False
+        )
+        ctx = renderer.render_tool_progress("read_file", '{"path":"/tmp/test.py"}')
+        assert isinstance(ctx, ToolProgressContext)
+
+    def test_render_tool_progress_returns_noop_for_non_interactive(
+        self, renderer: Renderer
+    ) -> None:
+        """非交互模式下返回 _NoOpToolProgressContext。"""
+        renderer.console = Console(
+            force_terminal=False, file=io.StringIO(), highlight=False
+        )
+        ctx = renderer.render_tool_progress("read_file", '{"path":"/tmp/test.py"}')
+        assert isinstance(ctx, _NoOpToolProgressContext)
+
+    # ------------------------------------------------------------------
+    # 上下文生命周期
+    # ------------------------------------------------------------------
+
+    def test_enter_exit_no_exception(self, progress_console: Console) -> None:
+        """进入和退出上下文不应抛异常。"""
+        ctx = ToolProgressContext(progress_console, "search", '{"query":"hello"}')
+        ctx.__enter__()
+        ctx.__exit__(None, None, None)
+        # 无异常即通过
+
+    def test_completion_line_contains_tool_name(
+        self, progress_console: Console
+    ) -> None:
+        """退出上下文后应输出包含工具名称的完成行。"""
+        ctx = ToolProgressContext(progress_console, "search", '{"query":"hello"}')
+        ctx.__enter__()
+        ctx.__exit__(None, None, None)
+        output = progress_console.file.getvalue()  # type: ignore[union-attr]
+        assert "search" in output
+
+    def test_completion_line_shows_elapsed(
+        self, progress_console: Console
+    ) -> None:
+        """完成行应包含耗时（ms）。"""
+        ctx = ToolProgressContext(progress_console, "read", "path")
+        ctx.__enter__()
+        ctx.__exit__(None, None, None)
+        output = progress_console.file.getvalue()  # type: ignore[union-attr]
+        assert "ms" in output
+
+    def test_args_truncated_to_80_chars(
+        self, progress_console: Console
+    ) -> None:
+        """参数摘要应截断至 80 字符。"""
+        long_args = "x" * 150
+        ctx = ToolProgressContext(progress_console, "echo", long_args)
+        assert len(ctx._args_summary) <= 80
+
+    def test_exit_does_not_suppress_exceptions(
+        self, progress_console: Console
+    ) -> None:
+        """__exit__ 应返回 False（不抑制异常）。"""
+        ctx = ToolProgressContext(progress_console, "tool", "")
+        ctx.__enter__()
+        result = ctx.__exit__(None, None, None)
+        assert result is False
+
+    def test_failure_shows_fail_not_complete(
+        self, progress_console: Console
+    ) -> None:
+        """工具执行异常时完成行应显示"失败"而非"完成"。"""
+        ctx = ToolProgressContext(progress_console, "failing_tool", "{}")
+        ctx.__enter__()
+        ctx.__exit__(RuntimeError, RuntimeError("boom"), None)
+        output = progress_console.file.getvalue()  # type: ignore[union-attr]
+        assert "失败" in output
+        assert "完成" not in output
+
+    def test_noop_context_has_same_interface(self) -> None:
+        """_NoOpToolProgressContext 应具有相同接口。"""
+        ctx = _NoOpToolProgressContext()
+        ctx.__enter__()
+        ctx.__exit__(None, None, None)
+        # 无异常即通过
+
+
+# ============================================================================
+# Phase 2 §3.2: 加载动画 — render_status_line 测试
+# ============================================================================
+
+
+class TestRenderStatusLine:
+    """render_status_line 状态行渲染测试。"""
+
+    def test_interactive_prints_text(self, renderer: Renderer) -> None:
+        """交互模式下应输出状态文本。"""
+        renderer.console = Console(
+            force_terminal=True, file=io.StringIO(), highlight=False, width=120
+        )
+        renderer.render_status_line("处理中...")
+        output = renderer.console.file.getvalue()  # type: ignore[union-attr]
+        assert "处理中..." in output
+
+    def test_non_interactive_skips_output(self, renderer: Renderer) -> None:
+        """非交互模式下应跳过输出。"""
+        renderer.console = Console(
+            force_terminal=False, file=io.StringIO(), highlight=False, width=120
+        )
+        renderer.render_status_line("should not appear")
+        output = renderer.console.file.getvalue()  # type: ignore[union-attr]
+        assert output == ""
+
+    def test_empty_text_no_output(self, renderer: Renderer) -> None:
+        """空文本应无输出。"""
+        renderer.console = Console(
+            force_terminal=True, file=io.StringIO(), highlight=False, width=120
+        )
+        renderer.render_status_line("")
+        output = renderer.console.file.getvalue()  # type: ignore[union-attr]
+        assert output == ""
+
+
+# ============================================================================
+# Phase 2 §3.2: _is_interactive 测试
+# ============================================================================
+
+
+class TestIsInteractive:
+    """_is_interactive 交互模式检测测试。"""
+
+    def test_returns_true_for_interactive_console(
+        self, renderer: Renderer
+    ) -> None:
+        """force_terminal=True 时 _is_interactive() 应返回 True。"""
+        renderer.console = Console(
+            force_terminal=True, file=io.StringIO(), highlight=False
+        )
+        assert renderer._is_interactive() is True
+
+    def test_returns_false_for_non_interactive_console(
+        self, renderer: Renderer
+    ) -> None:
+        """is_interactive=False 时 _is_interactive() 应返回 False。"""
+        renderer.console = Console(
+            force_terminal=False, file=io.StringIO(), highlight=False
+        )
+        assert renderer._is_interactive() is False
